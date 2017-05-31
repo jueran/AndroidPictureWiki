@@ -1,0 +1,557 @@
+android 图片处理总结和那些坑
+一。从系统拍照获取图片
+1.获取权限（6.0以前代码动态获取权限，在清单文件中声明需要camera权限）
+<uses-permission android:name="android.permission.CAMERA" />
+
+
+@Override
+public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+
+    if (requestCode == MY_PERMISSIONS_REQUEST_CAPTURE_PICTURE) {
+        if (grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+           captureImage();
+        } else {
+            ToastUtils.toastShort(OtherCertificationActivity.this, "拍照权限被拒绝");
+        }
+        return;
+    }
+    super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+}
+
+一些手机比如说小米和华为等深度定制的对于权限通过上述方法无法获取到正确结果，需要通过尝试打开camera的方式捕捉异常得到正确的权限获取状态（貌似系统判断权限也是通过这种捕捉异常的方式获取权限状态的）
+
+private boolean hasCameraPermission(){try{       
+ Camera camera=Camera.open();        
+camera.release();return true;   
+ }catch (RuntimeException e){return false;    }}
+
+private void getPermissionAndScan() {
+if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
+ {if (!hasCameraPermission()) {      
+      ActivityCompat.requestPermissions(getActivity(),new String[]{Manifest.permission.CAMERA},MY_PERMISSIONS_REQUEST_CAPTURE_PICTURE);       
+ } else {     
+       goCaptureCamera();     
+   }  
+  } else {        goCaptureCamera();    }}
+
+2.获取是否有camera
+1. public class CameraProvider {  
+2.   
+3.     private static boolean checkCameraFacing(final int facing) {  
+4.         if (getSdkVersion() < Build.VERSION_CODES.GINGERBREAD) {  
+5.             return false;  
+6.         }  
+7.         final int cameraCount = Camera.getNumberOfCameras();  
+8.         Camera.CameraInfo info = new Camera.CameraInfo();  
+9.         for (int i = 0; i < cameraCount; i++) {  
+10.             Camera.getCameraInfo(i, info);  
+11.             if (facing == info.facing) {  
+12.                 return true;  
+13.             }  
+14.         }  
+15.         return false;  
+16.     }  
+17.   
+18.     /** 
+19.      * 检查设备是否有摄像头 
+20.      * @return 
+21.      */  
+22.     public static boolean hasCamera() {  
+23.         return hasBackFacingCamera() || hasFrontFacingCamera();  
+24.     }  
+25.   
+26.     /**检查设备是否有后置摄像头 
+27.      * @return 
+28.      */  
+29.     public static boolean hasBackFacingCamera() {  
+30.         final int CAMERA_FACING_BACK = 0;  
+31.         return checkCameraFacing(CAMERA_FACING_BACK);  
+32.     }  
+33.   
+34.     /**检查设备是否有前置摄像头 
+35.      * @return 
+36.      */  
+37.     public static boolean hasFrontFacingCamera() {  
+38.         final int CAMERA_FACING_BACK = 1;  
+39.         return checkCameraFacing(CAMERA_FACING_BACK);  
+40.     }  
+41.   
+42.     public static int getSdkVersion() {  
+43.         return android.os.Build.VERSION.SDK_INT;  
+44.     }  
+45. }  
+46.
+由于getNumberOfCameras以及getCameraInfo均为API 9 引入，所以方法只适用于2.3及其以上。
+PS:貌似现在找个4.0以下的手机也有点难了,这个问题可以直接忽略...
+
+3.调取系统拍照
+添加读写sdcard权限
+<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+
+private static Uri cameraUri;
+private void captureImage() {
+    Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+    cameraUri = getOutputMediaFileUri(MEDIA_TYPE_IMAGE);
+    intent.putExtra(MediaStore.EXTRA_OUTPUT, cameraUri);
+    startActivityForResult(intent, CAMERA_CAPTURE_IMAGE_REQUEST_CODE);
+}
+public static Uri getOutputMediaFileUri(int type) {
+    return Uri.fromFile(getOutputMediaFile(type));
+}
+
+public static File getOutputMediaFile(int type) {
+    File mediaFile;
+    File mediaStorageDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), IMAGE_DIRECTORY_NAME);
+    if (!mediaStorageDir.exists()) {
+        if (!mediaStorageDir.mkdirs()) {
+            return null;
+        }
+    }
+    String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
+    if (type == MEDIA_TYPE_IMAGE) {
+        mediaFile = new File(mediaStorageDir.getPath() + File.separator + "IMG_" + timeStamp + ".jpg");
+    } else {
+        return null;
+    }
+    return mediaFile;
+}
+注意点：（1）要先设置一个uri来存放拍照之后的图片，因为测试发现不同手机调用系统相机拍照时，有些并不会把照片存储起来，导致返回时无法获取照片数据。Android的兼容性真是一个头大的难题，但是问题依然是要解决，google了有了解决方案。就是拍照时会把数据指定存储在SDcard上，之后再从uri中取出来图片在sdcard上的存储路径。（2）
+@Override
+protected void onRestoreInstanceState(Bundle savedInstanceState) {
+    super.onRestoreInstanceState(savedInstanceState);
+    if(cameraUri==null){
+        cameraUri=savedInstanceState.getParcelable("uri");
+    }
+}
+
+@Override
+protected void onSaveInstanceState(Bundle outState) {
+    super.onSaveInstanceState(outState);
+    outState.putParcelable("uri",cameraUri);
+}
+private void dealCameraCaptureResult(int resultCode) {
+        if (resultCode == RESULT_OK) {
+            int start = ImageSelector.getSelectedImageCount();
+            String path = cameraUri.getPath();
+                ElegantPhotoModel model = new ElegantPhotoModel();
+                model.setImagePath(path);
+                model.setImageStatus(STATUS_PICTURE_WAIT);
+                ImageSelector.addImage(model);
+                showView();
+                UploadPicRunnable runnable = new UploadPicRunnable(start, path);
+                uploadPicRunnables.add(runnable);
+                new Thread(runnable).start();
+        }
+    }
+
+当调用系统拍照之后可能会由于系统内存不足把处于后台的activity销毁的可能性，所以要在onSaveInstanceState中保存拍照的uri，然后再拍照完成恢复调用系统拍照activity时在onRestoreInstanceState中恢复保存图片的uri，防止空指针,b保证后续对图片的压缩上传处理继续顺利进行。
+二。从系统媒体库获取图片（耗时操作，需要运行在工作线程）
+1.从媒体库获取图片路径和相册名称等信息
+使用一个hashmap来存储照片信息，string是相册名字，GalleryEntity是存储相册内图片路径list和相册信息的实体类。
+private HashMap<String, GalleryEntity> galleries = new HashMap<String, GalleryEntity>();
+private void getGalleryPhotos() {
+    new Thread(new Runnable() {
+        @Override
+        public void run() {
+            Cursor imageCursor = null;
+            try {
+                imageCursor = getPictureCursor(imageCursor);
+                if (imageCursor != null && imageCursor.getCount() > 0) {
+                    encapsulateGalleryData(imageCursor);
+                    showAllPicture();
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            } finally {
+                if (imageCursor != null && !imageCursor.isClosed()) imageCursor.close();
+            }
+        }
+    }).start();
+}
+
+private Cursor getPictureCursor(Cursor imageCursor) {
+    final String[] columns = {MediaStore.Images.Media.DATA, MediaStore.Images.Media._ID};
+    final String orderBy = MediaStore.Images.Media._ID;
+    imageCursor = getContentResolver().query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, columns,
+            null, null, orderBy);
+    return imageCursor;
+}
+
+因为通过contentprovider从系统媒体库中是个耗时操作，所以要把从系统媒体库中获取图片的操作放在工作线程中，获取图片完成后取消加载进度条，在UI线程中对图片信息进行封装和使用列表展示图片，完成之后关闭cursor。（由于列表大量的图片展示会占用大量内存，需要进行一些繁琐的图片压缩展示，内存循环回收利用，细节较多，所以使用了glide框架进行图片列表展示）
+
+2.刷新系统媒体库
+Android的媒体库其实就是一个数据库文件，当系统启动完成、SD卡插拔或者接收到“Intent.ACTION_MEDIA_SCANNER_SCAN_FILE”广播消息时，系统会扫描文件系统中的数据，将新增和删除的文件信息更新到这个数据库中，这样当其它程序获取文件系统中的文件信息时，直接操作这个数据库就行了，不用去文件系统中取，但如果我们在开机状态下，在sdcard内增加或删除一些媒体文件时，系统并不会自动扫描，因此媒体库不会更新（除非自行向媒体数据库中添加或删除），常见没有重新开机的手机媒体库中的数据滞后，可以拿到图片路径，但是该图片早就被删除了。所以我们需要在每次从媒体库中获取图片信息之前刷新媒体库。
+在Android 4.4之前我们可以通过以下方式，使系统扫描sdcard并更新媒体数据库：
+
+Intent intent = new Intent(Intent.ACTION_MEDIA_MOUNTED);
+intent.setData(Uri.parse("file://" + Environment.getExternalStorageDirectory().getAbsolutePath()));
+sendBroadcast(intent); 发送一个广播，让系统更新媒体数据库，也适用于删除媒体文件；
+
+
+在Android 4.4之后
+
+但在Android 4.4中，限制了系统应用才有权限使用广播通知系统扫描SD卡，如果普通应用发送此广播将会出现异常：Permission Denial: not allowed to send broadcast android.intent.action.MEDIA_MOUNTED
+
+ 因此，我们不能使用这种方式了，我们可以使用下面的代码实现相同的功能：
+
+1. MediaScannerConnection.scanFile(this, new String[] { Environment  
+2.                 .getExternalStorageDirectory().getAbsolutePath() }, null, null);  
+
+所以扫描媒体库的完整代码如下
+
+private void scanSdCard() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.KITKAT) {
+        Intent intent = new Intent(Intent.ACTION_MEDIA_MOUNTED);
+        intent.setData(Uri.parse("file://" + Environment.getExternalStorageDirectory().getAbsolutePath()));
+        sendBroadcast(intent);
+    }else{
+        MediaScannerConnection.scanFile(this, new String[] { Environment.getExternalStorageDirectory().
+                getAbsolutePath() }, null, null);
+    }
+
+}
+三。图片压缩
+Google在Android的官网上有这样一篇文章，初步介绍了Android是如何管理应用的进程与内存分配：http://developer.android.com/training/articles/memory.html。 Android系统的Dalvik虚拟机扮演了常规的内存垃圾自动回收的角色，Android系统没有为内存提供交换区，它使用paging与memory-mapping(mmapping)的机制来管理内存。
+1.图片的存在形式
+文件形式(即以二进制形式存在于硬盘上)
+流的形式(即以二进制形式存在于内存中)
+Bitmap形式
+这三种形式的区别: 文件形式和流的形式对图片体积大小并没有影响,也就是说,如果你手机SD卡上的如果是100K,那么通过流的形式读到内存中,也一定是占100K的内存,注意是流的形式,不是Bitmap的形式,当图片以Bitmap的形式存在时,其占用的内存会瞬间变大, 我试过500K文件形式的图片加载到内存,以Bitmap形式存在时,占用内存将近10M,当然这个增大的倍数并不是固定的
+检测图片三种形式大小的方法:
+文件形式: file.length()
+流的形式: 讲图片文件读到内存输入流中,看它的byte数
+Bitmap:    bitmap.getByteCount()
+解析图片的方法
+
+在Android中，提供了一个BitmapFactory类，该类为一个工其类，用于从不同的数据源来解析、创建Bitmap对象,
+
+BitmapFactory类提供的创建Bitmap对象，它提供了常用方法：
+
+BitmapFactory.decodeFile(String pathName)从sdcard解析文件
+BitmapFactory.decodeResource(Resources res, int id)从resource资源文件解析文件
+BitmapFactory.decodeStream(InputStream is) 从网络io流解析文件
+解析产生的文件存放在应用申请的底层内存空间。
+2.压缩原理讲解：
+
+压缩一张图片。我们需要知道这张图片的原始大小，然后根据我们设定的压缩比例进行像素压缩，对图片进行旋转（有些手机rom进行了定制，拍照后图片会有旋转），然后通过循环质量压缩，直到图片大小符合要求，释放bitmap，调用system.gc()通知系统进行gc回收内存（最后不要忘记关闭io流）。
+这样我们就需要做6件事：
+1.获取原始图片的长和宽，可以不把图片读到内存中,计算出图片的大小
+
+2.计算压缩比例
+一般用来展示图片imageview分辨率都较小，老师主页为高度为228，高度为405，这2个值只是期望的宽度与高度，如果图片的原始高度或者宽带大约我们期望的宽带和高度，我们需要计算出缩放比例的数值。 inSampleSize表示压缩比例。
+3.进行像素压缩，
+比如我们有一张2048*1536像素的图片，将inSampleSize的值设置为4，就可以把这张图片压缩成512*384像素。原本加载这张图片需要占用13M（2048*1536*4/1024/1024）的内存，压缩后就只需要占用0.75M（512*384*4/1024/1024）了(假设解析图片使用ARGB_8888类型，即每个像素点占用4个字节)。
+关于ARGB_8888、ALPHA_8、ARGB_4444、RGB_565的理解
+
+A：透明度
+
+R：红色
+
+G：绿
+
+B：蓝
+
+Bitmap.Config ARGB_4444：每个像素占四位，即A=4，R=4，G=4，B=4，那么一个像素点占4+4+4+4=16位 
+
+Bitmap.Config ARGB_8888：每个像素占四位，即A=8，R=8，G=8，B=8，那么一个像素点占8+8+8+8=32位
+
+Bitmap.Config RGB_565：每个像素占四位，即R=5，G=6，B=5，没有透明度，那么一个像素点占5+6+5=16位
+
+Bitmap.Config ALPHA_8：每个像素占四位，只有透明度，没有颜色。
+
+系统默认都是使用的ARGB_8888，它是最占内存的，因为一个像素占32位，8位=1字节，所以一个像素占4字节的内存。假设有一张2048*1536的图片，如果格式为ARGB_8888，那么将会占用13M的内存，而使用RGB_565,因为一个像素占16位，8位=1字节，所以一个像素占2字节的内存,那么将会占用6.5M。
+
+/** 
+*进行像素压缩
+ * 按比例缩小图片的像素以达到压缩的目的 
+*（相当于是像素上的压缩）
+ * @param imgPath 
+ */  
+public static void compressImageByPixel(String imgPath) {  
+    BitmapFactory.Options newOpts = new BitmapFactory.Options();  
+    newOpts.inJustDecodeBounds = true;//只读边,不读内容  
+    Bitmap bitmap = BitmapFactory.decodeFile(imgPath, newOpts);  
+    newOpts.inJustDecodeBounds = false;  
+    int width = newOpts.outWidth;  
+    int height = newOpts.outHeight;  
+    float maxSize = 1000f;//默认1000px  
+    int be = 1;  
+    if (width > height && width > maxSize) {//缩放比,用高或者宽其中较大的一个数据进行计算  
+        be = (int) (newOpts.outWidth / maxSize);  
+    } else if (width < height && height > maxSize) {  
+        be = (int) (newOpts.outHeight / maxSize);  
+    }  
+    be++;  
+    newOpts.inSampleSize = be;//设置采样率  
+    newOpts.inPreferredConfig = Config.ARGB_565;//ARGB_565占2位，默认的格式是ARGB_8888(省一半内存)
+    newOpts.inDither=true;//不进行图片抖动处理，可能会模糊，不推荐使用
+    newOpts.inPurgeable = true;// .inPurgeable和inInputShareable同时设置才会有效  ，
+    newOpts.inInputShareable = true;//。当系统内存不够时候图片自动被回收  
+    bitmap = BitmapFactory.decodeFile(imgPath, newOpts);
+    int degree=ScreenUtils.readPictureDegree(source);//图片旋转
+    if(degree!=0){
+         bitmap=ScreenUtils.rotateImageView(degree,bitmap);
+     } 
+    compressImageByQuality(bitmap);//质量压缩    
+}  
+
+3.图片旋转（先进行图片旋转，再进行质量压缩，否则有些手机会导致图片向左旋转90度（三星note3））
+有一些手机厂商对rom进行了定制，拍照后图片会有旋转，上传到服务器后显示会有问题。
+
+解决思路，先获取图片选择角度：
+
+
+
+/**
+ * 读取图片属性：旋转的角度
+ *
+ * @param path 图片绝对路径
+ * @return degree旋转的角度
+ */
+public static int readPictureDegree(String path) {
+    int degree = 0;
+    try {
+        ExifInterface exifInterface = new ExifInterface(path);
+        int orientation = exifInterface.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
+        switch (orientation) {
+            case ExifInterface.ORIENTATION_ROTATE_90:
+                degree = 90;
+                break;
+            case ExifInterface.ORIENTATION_ROTATE_180:
+                degree = 180;
+                break;
+            case ExifInterface.ORIENTATION_ROTATE_270:
+                degree = 270;
+                break;
+        }
+    } catch (IOException e) {
+        e.printStackTrace();
+    }
+    return degree;
+}
+然后进行旋转：
+/**
+ * 旋转图片
+ *
+ * @param angle
+ * @param bitmap
+ * @return Bitmap
+ */
+public static Bitmap rotateImageView(int angle, Bitmap bitmap) {
+    //旋转图片 动作
+    Matrix matrix = new Matrix();
+    matrix.postRotate(angle);
+    // 创建新的图片
+    return Bitmap.createBitmap(bitmap, 0, 0,bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+}
+
+4.进行循环质量压缩，只将图片压缩到MAX_FILE_SIZE以内
+/** 
+ *质量压缩（不改变图片的尺寸）以达到压缩的目的 
+ * @param imgPath 
+ */  
+public static void compressImageByQuality(Bitmap bitmap) { 
+inSampleSize = 100;
+while (outFileSize > MAX_FILE_SIZE && inSampleSize != 0) {
+    inSampleSize = inSampleSize - 10;
+    out = new FileOutputStream(toPath);
+    bitmap.compress(Bitmap.CompressFormat.JPEG, inSampleSize, out);
+    LogUtils.d(TAG, "二次压缩时间" + (System.currentTimeMillis() - time) + "毫秒");
+    outFileSize = outFile.length();
+    LogUtils.d(TAG, "二次压缩后文件大小" + file.getAbsolutePath() + ":::" + outFileSize / 1024 + "K");
+    closeOutPutStream(out);
+}
+}
+5.释放bitmap，通知gc回收内存。
+bitmap.recycle();
+System.gc();
+6.如果使用到io流，关闭，释放资源。
+private static void closeOutPutStream(FileOutputStream out) {
+    try {
+        if (out != null) {
+            out.close();
+        }
+    } catch (IOException e) {
+        e.printStackTrace();
+    }
+}
+处理oom（图片处理放在一个单独进程）
+注意点：
+1.把service放置到单独进程compressuploadimage
+<service android:name=".service.compressanduploadimage.CompressAndUploadImageService"
+    android:process=":compressuploadimage">
+</service>
+2.activity和compressuploadimage进程的service通过intent和broadcast通信
+注意点：（1）多核cpu情况下开？个线程最合理 Runtime.getRuntime().availableProcessors()*2+1；
+（2）onStartCommand中把该service所在的进程提升为前台进程，防止低内存状态被杀掉，
+ startForeground(1,new Notification());，然后记得在onDestroy把service
+（3）通过startService 启动service 的onCreate()只会在调用一次，但是onStartCommand（）每次startService都会执行一次
+
+public class CompressAndUploadImageService extends Service {
+    private static final String TAG = "CompressAndUploadImage”;
+//多核cpu情况下开MAX_THREAD_NUM个线程最合理
+    private static final int MAX_THREAD_NUM = Runtime.getRuntime().availableProcessors()*2+1;
+    private int taskNumber;
+    private ExecutorService executorService;
+    private final Object lock = new Object();
+
+    private ArrayList<PictureModel> compressResults = new ArrayList<>();
+
+    public CompressAndUploadImageService() {
+    }
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        Log.d(TAG, "onCreate...");
+        executorService = Executors.newFixedThreadPool(MAX_THREAD_NUM);
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        Log.d(TAG, "onDestroy...”);
+//将
+        stopForeground(true);
+        Intent intent = new Intent(Constanse.ACTION_COMPRESS_BROADCAST);
+        intent.putExtra(Constanse.KEY_COMPRESS_FLAG, Constanse.FLAG_END);
+        intent.putParcelableArrayListExtra(Constanse.KEY_COMPRESS_RESULT, compressResults);
+        sendBroadcast(intent);
+        compressResults.clear();
+        executorService.shutdownNow();
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        startForeground(1,new Notification());
+        doCompressImages(intent, startId);
+        return Service.START_NOT_STICKY;
+    }
+
+    private void doCompressImages(final Intent intent, final int taskId) {
+        final ArrayList<PictureModel> paramArrayList = intent.getParcelableArrayListExtra(Constanse.COMPRESS_PARAM);
+        synchronized (lock) {
+            compressResults.addAll(paramArrayList);
+            taskNumber += paramArrayList.size();
+        }
+        //如果paramArrayList过大,为了避免"The application may be doing too much work on its main thread"的问题,将任务的创建和执行统一放在后台线程中执行
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                for (int i = 0; i < paramArrayList.size(); ++i){
+                    executorService.execute(new UploadPicRunnable(paramArrayList.get(i),taskId));
+                }
+            }
+        }).start();
+    }
+
+    private class UploadPicRunnable implements Runnable {
+        public boolean isCanceled = false;
+        private final PictureModel pictureModel;
+        private int taskId;
+
+        public UploadPicRunnable(PictureModel pictureModel, int taskId) {
+            this.pictureModel = pictureModel;
+            this.isCanceled = false;
+            this.taskId = taskId;
+        }
+
+        @Override
+        public void run() {
+            if (isCanceled) {
+                return;
+            }
+            ZipImageUtil zipImageUtil = new ZipImageUtil(getApplicationContext(), pictureModel.getImagePath());
+            String zipImagePath = zipImageUtil.getZips();
+            LogUtils.d("zipImagePath" + pictureModel.getId(), zipImagePath);
+            pictureModel.setZipImagePath(zipImagePath);
+            if (isCanceled) {
+                return;
+            }
+            LogUtils.log("isCancel = " + isCanceled + "", zipImagePath);
+            uploadPicture(pictureModel, taskId);
+
+        }
+    }
+
+    //上传照片
+    private void uploadPicture(final PictureModel pictureModel, int taskId) {
+        UploadFileHttpUtils httpUtils = new UploadFileHttpUtils();
+        httpUtils.configRequestThreadPoolSize(MAX_THREAD_NUM);
+        UploadPictureCallBack callBack = initUpLoadPhotoCallBack(pictureModel, taskId);
+        httpUtils.send(pictureModel.getZipImagePath(), callBack);
+    }
+
+    private UploadPictureCallBack initUpLoadPhotoCallBack(PictureModel pictureModel, int taskId) {
+        UploadPictureCallBack callBack = new UploadPictureCallBack() {
+            @Override
+            public void onStart() {
+                super.onStart();
+            }
+
+            @Override
+            public void onSuccess(ResponseInfo<String> responseInfo) {
+                super.onSuccess(responseInfo);
+                Gson gson = new Gson();
+                dealAliyunUpLoadSuccess(responseInfo, gson, pictureModel, taskId);
+                sendBroadcast(taskId);
+            }
+
+            @Override
+            public void onFailure(HttpException error, String msg) {
+                super.onFailure(error, msg);
+                pictureModel.setState(PictureModel.PictureUploadState.FAIL);
+                sendBroadcast(taskId);
+            }
+
+            @Override
+            public void onLoading(long total, long current, boolean isUploading) {
+                super.onLoading(total, current, isUploading);
+            }
+        };
+        return callBack;
+    }
+
+    private void dealAliyunUpLoadSuccess(ResponseInfo<String> responseInfo, Gson gson,
+                                         PictureModel pictureModel, int taskId) {
+        UploadImageResult tempUploadImageResult =
+                gson.fromJson(responseInfo.result, UploadImageResult.class);
+        if (tempUploadImageResult != null && tempUploadImageResult.isSuccess()) {
+            pictureModel.setState(PictureModel.PictureUploadState.SUCCESS);
+            pictureModel.setImageAlId(tempUploadImageResult.image_id);
+            if (pictureModel.getZipImagePath() != null) {
+                new File(pictureModel.getZipImagePath()).delete();
+            }
+
+            Log.d(TAG, taskId + " do compress end..." + Thread.currentThread().getId());
+        } else {
+            pictureModel.setState(PictureModel.PictureUploadState.FAIL);
+        }
+    }
+
+    private void sendBroadcast(int taskId) {
+        synchronized (lock) {
+            taskNumber--;
+            if (taskNumber <= 0) {
+                stopSelf(taskId);
+            }
+        }
+    }
+
+    @Nullable
+    @Override
+    public IBinder onBind(Intent intent) {
+        return null;
+    }
+
+}
+
+启动service
+ArrayList<PictureModel> list = new ArrayList<>();
+Intent intent = new Intent(getActivity(), CompressAndUploadImageService.class);
+intent.putExtra(Constanse.COMPRESS_PARAM, list);
+getActivity().startService(intent);
+
+
+
